@@ -191,9 +191,9 @@ class ScanGPUBlelloch {
 public:
 	static const size_t BLOCK_SIZE = 512;
 
-	template<class T, class Operator>
-	static T* inclusive_scan(const T* arr, size_t n, const Operator& op) {
-	}
+	// template<class T, class Operator>
+	// static T* inclusive_scan(const T* arr, size_t n, const Operator& op) {
+	// }
 
 	template<class T, class Operator>
 	static T* exclusive_scan(const T* arr, size_t n, const Operator& op) {
