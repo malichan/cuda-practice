@@ -5,7 +5,7 @@
 #include <iostream>
 using namespace std;
 
-#define TYPE long long
+#define TYPE float
 
 int main() {
 	size_t n = 1000000;
@@ -18,12 +18,12 @@ int main() {
 	TYPE reduce_gpu = ReduceGPU::reduce(arr, n, Operators::add<TYPE>());
 	cout << "Reduce GPU: " << reduce_gpu << endl;
 
-	TYPE* inc_scan_cpu = ScanCPU::inclusive_scan(arr, n, Operators::max<TYPE>());
+	TYPE* inc_scan_cpu = ScanCPU::inclusive_scan(arr, n, Operators::add<TYPE>());
 	cout << "Inclusive Scan CPU: ";
 	for (size_t i = 0; i < n; i += n >> 3)
 		cout << inc_scan_cpu[i] << " ";
 	cout << endl;
-	TYPE* inc_scan_gpu = ScanGPUHillisSteele::inclusive_scan(arr, n, Operators::max<TYPE>());
+	TYPE* inc_scan_gpu = ScanGPUBlelloch::inclusive_scan(arr, n, Operators::add<TYPE>());
 	cout << "Inclusive Scan GPU: ";
 	for (size_t i = 0; i < n; i += n >> 3)
 		cout << inc_scan_gpu[i] << " ";
