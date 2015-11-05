@@ -131,48 +131,62 @@ private:
 	}
 };
 
+#define LOG_NUM_BANKS 5
+
 template<class T, class Operator>
 __global__
 void _scan_blelloch_1(T* arr, size_t n, T* part, const Operator& op, T identity) {
-	extern __shared__ T s_arr[];
+	extern __shared__ volatile T s_arr[];
 
-	size_t local_id = threadIdx.x;
-	size_t global_id = threadIdx.x + blockIdx.x * blockDim.x;
+	size_t local_id_0 = threadIdx.x;
+	size_t local_id_1 = local_id_0 + blockDim.x;
+	local_id_0 += local_id_0 >> LOG_NUM_BANKS;
+	local_id_1 += local_id_1 >> LOG_NUM_BANKS;
+	size_t global_id_0 = threadIdx.x + blockIdx.x * 2 * blockDim.x;
+	size_t global_id_1 = global_id_0 + blockDim.x;
 
-	if (global_id < n) {
-		s_arr[local_id] = arr[global_id];
-	} else {
-		s_arr[local_id] = identity;
-	}
-	__syncthreads();
+	s_arr[local_id_0] = global_id_0 < n ? arr[global_id_0] : identity;
+	s_arr[local_id_1] = global_id_1 < n ? arr[global_id_1] : identity;
 
 	size_t offset, threads;
-	for (offset = 1, threads = blockDim.x >> 1; offset < blockDim.x; offset <<= 1, threads >>= 1) {
-		if (local_id < threads) {
-			size_t idx = (local_id + 1) * offset * 2 - 1;
-			s_arr[idx] = op(s_arr[idx], s_arr[idx - offset]);
-		}
+
+	for (offset = 1, threads = blockDim.x; threads > 0; offset <<= 1, threads >>= 1) {
 		__syncthreads();
+		if (threadIdx.x < threads) {
+			size_t dst = (threadIdx.x + 1) * offset * 2 - 1;
+			size_t src = dst - offset;
+			dst += dst >> LOG_NUM_BANKS;
+			src += src >> LOG_NUM_BANKS;
+			s_arr[dst] = op(s_arr[dst], s_arr[src]);
+		}
 	}
 
-	if (local_id == 0) {
-		part[blockIdx.x] = s_arr[blockDim.x - 1];
-		s_arr[blockDim.x - 1] = identity;
+	if (threadIdx.x == 0) {
+		size_t last = blockDim.x * 2 - 1;
+		last += last >> LOG_NUM_BANKS;
+		part[blockIdx.x] = s_arr[last];
+		s_arr[last] = identity;
 	}
+
+	for (offset = blockDim.x, threads = 1; offset > 0; offset >>= 1, threads <<= 1) {
+		__syncthreads();
+		if (threadIdx.x < threads) {
+			size_t dst = (threadIdx.x + 1) * offset * 2 - 1;
+			size_t src = dst - offset;
+			dst += dst >> LOG_NUM_BANKS;
+			src += src >> LOG_NUM_BANKS;
+			T temp = s_arr[dst];
+			s_arr[dst] = op(s_arr[dst], s_arr[src]);
+			s_arr[src] = temp;
+		}
+	}
+
 	__syncthreads();
-
-	for (offset = blockDim.x >> 1, threads = 1; offset > 0; offset >>= 1, threads <<= 1) {
-		if (local_id < threads) {
-			size_t idx = (local_id + 1) * offset * 2 - 1;
-			T temp = s_arr[idx];
-			s_arr[idx] = op(s_arr[idx], s_arr[idx - offset]);
-			s_arr[idx - offset] = temp;
-		}
-		__syncthreads();
+	if (global_id_0 < n) {
+		arr[global_id_0] = s_arr[local_id_0];
 	}
-
-	if (global_id < n) {
-		arr[global_id] = s_arr[local_id];
+	if (global_id_1 < n) {
+		arr[global_id_1] = s_arr[local_id_1];
 	}
 }
 
@@ -180,11 +194,16 @@ template<class T, class Operator>
 __global__
 void _scan_blelloch_2(T* arr, size_t n, T* part, const Operator& op) {
 	if (blockIdx.x > 0) {
-		size_t global_id = threadIdx.x + blockIdx.x * blockDim.x;
-		if (global_id < n) {
-			arr[global_id] = op(arr[global_id], part[blockIdx.x]);
+		size_t global_id_0 = threadIdx.x + blockIdx.x * 2 * blockDim.x;
+		size_t global_id_1 = global_id_0 + blockDim.x;
+
+		if (global_id_0 < n) {
+			arr[global_id_0] = op(arr[global_id_0], part[blockIdx.x]);
 		}
-	}
+		if (global_id_1 < n) {
+			arr[global_id_1] = op(arr[global_id_1], part[blockIdx.x]);
+		}
+	}	
 }
 
 class ScanGPUBlelloch {
@@ -225,8 +244,8 @@ private:
 		cudaError status = cudaSuccess;
 
 		size_t block = BLOCK_SIZE;
-		size_t size = BLOCK_SIZE * sizeof(T);
-		size_t grid = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		size_t size = (BLOCK_SIZE * 2 + ((BLOCK_SIZE * 2) >> LOG_NUM_BANKS)) * sizeof(T);
+		size_t grid = (n + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2);
 
 		T* d_part = 0;
 		status = cudaMalloc(&d_part, grid * sizeof(T));
