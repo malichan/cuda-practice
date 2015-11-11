@@ -66,7 +66,7 @@ int main() {
 	cudaEventRecord(start);
 	cudaEventSynchronize(start);
 
-	TYPE* exc_scan_gpu = ScanGPUBlelloch::exclusive_scan(arr, n, Operators::add<TYPE>());
+	TYPE* exc_scan_gpu = ScanGPUEfficient::exclusive_scan(arr, n, Operators::add<TYPE>());
 
 	cudaEventRecord(stop);
 	cudaEventSynchronize(stop);

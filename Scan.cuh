@@ -131,7 +131,7 @@ private:
 	}
 };
 
-#define LOG_NUM_BANKS 5
+const size_t LOG_NUM_BANKS = 5;
 
 template<class T, class Operator>
 __global__
@@ -257,6 +257,140 @@ private:
 			_exclusive_scan_device(d_part, grid, op);
 
 			_scan_blelloch_2<<<grid, block>>>(d_arr, n, d_part, op);
+		}
+
+		status = cudaFree(d_part);
+		if (status != cudaSuccess) return status;
+
+		return status;
+	}
+};
+
+template<class T, class Operator>
+__device__
+T _scan_efficient_warp(volatile T* s_arr, size_t local_id, size_t lane_id, const Operator& op, T identity) {
+	if (lane_id >= 1) {
+		s_arr[local_id] = op(s_arr[local_id], s_arr[local_id - 1]);
+	}
+	if (lane_id >= 2) {
+		s_arr[local_id] = op(s_arr[local_id], s_arr[local_id - 2]);
+	}
+	if (lane_id >= 4) {
+		s_arr[local_id] = op(s_arr[local_id], s_arr[local_id - 4]);
+	}
+	if (lane_id >= 8) {
+		s_arr[local_id] = op(s_arr[local_id], s_arr[local_id - 8]);
+	}
+	if (lane_id >= 16) {
+		s_arr[local_id] = op(s_arr[local_id], s_arr[local_id - 16]);
+	}
+
+	return s_arr[local_id];
+}
+
+template<class T, class Operator>
+__global__
+void _scan_efficient_1(T* arr, size_t n, T* part, const Operator& op, T identity) {
+	extern __shared__ volatile T s_arr[];
+
+	size_t local_id = threadIdx.x;
+	size_t global_id = threadIdx.x + blockIdx.x * blockDim.x;
+
+	s_arr[local_id] = global_id < n ? arr[global_id] : identity;
+
+	size_t lane_id = local_id & 31;
+	size_t warp_id = local_id >> 5;
+
+	T val = _scan_efficient_warp(s_arr, local_id, lane_id, op, identity);
+	__syncthreads();
+
+	if (lane_id == 31)
+		s_arr[warp_id] = s_arr[local_id];
+	__syncthreads();
+
+	if (warp_id == 0)
+		_scan_efficient_warp(s_arr, local_id, lane_id, op, identity);
+	__syncthreads();
+
+	if (warp_id > 0)
+		val = op(val, s_arr[warp_id - 1]);
+	__syncthreads();
+
+	s_arr[local_id] = val;
+	__syncthreads();
+
+	if (global_id < n) {
+		arr[global_id] = local_id > 0 ? s_arr[local_id - 1] : identity;
+	}
+
+	if (local_id == 0) {
+		part[blockIdx.x] = s_arr[blockDim.x - 1];
+	}
+}
+
+template<class T, class Operator>
+__global__
+void _scan_efficient_2(T* arr, size_t n, T* part, const Operator& op) {
+	if (blockIdx.x > 0) {
+		size_t global_id = threadIdx.x + blockIdx.x * blockDim.x;
+
+		if (global_id < n) {
+			arr[global_id] = op(arr[global_id], part[blockIdx.x]);
+		}
+	}
+}
+
+class ScanGPUEfficient {
+public:
+	static const size_t BLOCK_SIZE = 512;
+
+	// template<class T, class Operator>
+	// static T* inclusive_scan(const T* arr, size_t n, const Operator& op) {
+	// }
+
+	template<class T, class Operator>
+	static T* exclusive_scan(const T* arr, size_t n, const Operator& op) {
+		T* res = new T[n];
+		do {
+			cudaError status = cudaSuccess;
+
+			T* d_arr = 0;
+			status = cudaMalloc(&d_arr, n * sizeof(T));
+			if (status != cudaSuccess) break;
+			status = cudaMemcpy(d_arr, arr, n * sizeof(T), cudaMemcpyHostToDevice);
+			if (status != cudaSuccess) break;
+
+			status = _exclusive_scan_device(d_arr, n, op);
+			if (status != cudaSuccess) break;
+
+			status = cudaMemcpy(res, d_arr, n * sizeof(T), cudaMemcpyDeviceToHost);
+			if (status != cudaSuccess) break;
+
+			status = cudaFree(d_arr);
+			if (status != cudaSuccess) break;
+		} while (false);
+		return res;
+	}
+
+private:
+	template<class T, class Operator>
+	static cudaError _exclusive_scan_device(T* d_arr, size_t n, const Operator& op) {
+		cudaError status = cudaSuccess;
+
+		size_t block = BLOCK_SIZE;
+		size_t size = BLOCK_SIZE * sizeof(T);
+		size_t grid = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+		T* d_part = 0;
+		status = cudaMalloc(&d_part, grid * sizeof(T));
+		if (status != cudaSuccess) return status;
+
+		_scan_efficient_1<<<grid, block, size>>>(d_arr, n, d_part, op, op.identity);
+
+		if (grid > 1) {
+			_exclusive_scan_device(d_part, grid, op);
+
+			_scan_efficient_2<<<grid, block>>>(d_arr, n, d_part, op);
 		}
 
 		status = cudaFree(d_part);
